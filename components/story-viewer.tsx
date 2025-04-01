@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -32,112 +32,107 @@ export function StoryViewer({
   const [paused, setPaused] = useState(false)
   const progressInterval = useRef<NodeJS.Timeout | null>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const previousStoryId = useRef<string | null>(null)
 
   const currentGroup = storyGroups[currentGroupIndex]
   const currentStory = currentGroup?.stories[currentStoryIndex]
 
-  // Reset progress when story changes
-  useEffect(() => {
-    if (!open) return
+  // Navigation handlers declared first using useCallback
+  const goToNextStory = useCallback(() => {
+    if (!currentGroup) return
 
-    // Clear any existing interval
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current)
+    if (currentStoryIndex < currentGroup.stories.length - 1) {
+      setCurrentStoryIndex(prev => prev + 1)
+    } else if (currentGroupIndex < storyGroups.length - 1) {
+      setCurrentGroupIndex(prev => prev + 1)
+      setCurrentStoryIndex(0)
+    } else {
+      onOpenChange(false)
     }
-
-    // Mark story as viewed
-    if (currentStory) {
-      onView(currentStory._id)
-    }
-
     setProgress(0)
-    setPaused(false)
+  }, [currentGroup, currentStoryIndex, currentGroupIndex, storyGroups.length, onOpenChange])
 
-    // Set up progress interval
-    const duration = currentStory?.mediaType === "video" ? 0 : 5000 // 5 seconds for images, videos control their own duration
+  const goToPrevStory = useCallback(() => {
+    if (!currentGroup) return
 
-    if (duration > 0) {
-      const interval = setInterval(() => {
-        setProgress((prev) => {
-          const newProgress = prev + (100 / duration) * 100
-          if (newProgress >= 100) {
-            clearInterval(interval)
-            goToNextStory()
-            return 0
-          }
-          return newProgress
-        })
-      }, 100)
-
-      progressInterval.current = interval
-      return () => clearInterval(interval)
+    if (currentStoryIndex > 0) {
+      setCurrentStoryIndex(prev => prev - 1)
+    } else if (currentGroupIndex > 0) {
+      setCurrentGroupIndex(prev => prev - 1)
+      setCurrentStoryIndex(storyGroups[currentGroupIndex - 1].stories.length - 1)
     }
-  }, [currentGroupIndex, currentStoryIndex, open, currentStory])
+    setProgress(0)
+  }, [currentGroupIndex, currentStoryIndex, storyGroups, currentGroup])
+
+  // Track viewed stories
+  useEffect(() => {
+    if (currentStory && currentStory._id !== previousStoryId.current) {
+      onView(currentStory._id)
+      previousStoryId.current = currentStory._id
+    }
+  }, [currentStory, onView])
+
+  // Handle progress updates
+  useEffect(() => {
+    if (!open || !currentStory || paused) return
+
+    const handleProgress = () => {
+      setProgress(prev => {
+        const newProgress = prev + 1
+        if (newProgress >= 100) {
+          goToNextStory()
+          return 0
+        }
+        return newProgress
+      })
+    }
+
+    const duration = currentStory.mediaType === "video" 
+      ? (videoRef.current?.duration || 10) * 1000 
+      : 5000
+
+    progressInterval.current = setInterval(handleProgress, duration / 100)
+
+    return () => {
+      progressInterval.current && clearInterval(progressInterval.current)
+      progressInterval.current = null
+    }
+  }, [open, currentStory, paused, goToNextStory])
 
   // Handle video playback
   useEffect(() => {
-    if (currentStory?.mediaType === "video" && videoRef.current) {
-      videoRef.current.currentTime = 0
+    if (!videoRef.current || !currentStory) return
 
-      if (!paused) {
-        videoRef.current.play().catch((err) => console.error("Error playing video:", err))
-      } else {
-        videoRef.current.pause()
-      }
+    const video = videoRef.current
+    if (currentStory.mediaType === "video") {
+      video.currentTime = 0
+      paused ? video.pause() : video.play().catch(console.error)
     }
-  }, [currentStory, paused])
 
-  const goToNextStory = () => {
-    // If there are more stories in the current group
-    if (currentStoryIndex < currentGroup.stories.length - 1) {
-      setCurrentStoryIndex(currentStoryIndex + 1)
-    }
-    // If there are more groups
-    else if (currentGroupIndex < storyGroups.length - 1) {
-      setCurrentGroupIndex(currentGroupIndex + 1)
-      setCurrentStoryIndex(0)
-    }
-    // If we're at the end, close the viewer
-    else {
-      onOpenChange(false)
-    }
-  }
+    const handleEnd = () => goToNextStory()
+    video.addEventListener('ended', handleEnd)
 
-  const goToPrevStory = () => {
-    // If we're not at the first story in the group
-    if (currentStoryIndex > 0) {
-      setCurrentStoryIndex(currentStoryIndex - 1)
+    return () => {
+      video.removeEventListener('ended', handleEnd)
+      video.pause()
     }
-    // If we're at the first story but not the first group
-    else if (currentGroupIndex > 0) {
-      setCurrentGroupIndex(currentGroupIndex - 1)
-      setCurrentStoryIndex(storyGroups[currentGroupIndex - 1].stories.length - 1)
-    }
-  }
+  }, [currentStory, paused, goToNextStory])
 
-  const handleVideoEnded = () => {
-    goToNextStory()
-  }
+  const togglePause = () => setPaused(!paused)
 
-  const togglePause = () => {
-    setPaused(!paused)
-  }
-
-  if (!currentGroup || !currentStory) {
-    return null
-  }
+  if (!currentGroup || !currentStory) return null
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-screen-md h-[80vh] p-0 gap-0 bg-black text-white">
         <DialogTitle className="sr-only">Story Viewer</DialogTitle>
         <div className="relative flex flex-col h-full">
-          {/* Header */}
+          {/* Header Section */}
           <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between p-4 bg-gradient-to-b from-black/70 to-transparent">
             <div className="flex items-center gap-3">
               <Avatar>
                 <AvatarImage
-                  src={currentGroup.user.image || "/placeholder.svg?height=40&width=40"}
+                  src={currentGroup.user.image || "/placeholder.svg"}
                   alt={currentGroup.user.name}
                 />
                 <AvatarFallback>{currentGroup.user.name.charAt(0)}</AvatarFallback>
@@ -149,24 +144,32 @@ export function StoryViewer({
                 </p>
               </div>
             </div>
-            <Button variant="ghost" size="icon" onClick={() => onOpenChange(false)} className="text-white">
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              onClick={() => onOpenChange(false)}
+              className="text-white hover:bg-white/10"
+            >
               <X className="h-5 w-5" />
             </Button>
           </div>
 
-          {/* Progress bars */}
+          {/* Progress Bars */}
           <div className="absolute top-16 left-0 right-0 z-10 flex gap-1 px-4">
             {currentGroup.stories.map((story, index) => (
               <Progress
                 key={story._id}
                 value={index === currentStoryIndex ? progress : index < currentStoryIndex ? 100 : 0}
-                className="h-1 flex-1"
+                className="h-1 flex-1 bg-gray-700/50 [&>div]:bg-white"
               />
             ))}
           </div>
 
-          {/* Story content */}
-          <div className="flex-1 flex items-center justify-center bg-black" onClick={togglePause}>
+          {/* Story Content */}
+          <div 
+            className="flex-1 flex items-center justify-center bg-black cursor-pointer" 
+            onClick={togglePause}
+          >
             {currentStory.mediaUrl ? (
               currentStory.mediaType === "video" ? (
                 <video
@@ -174,12 +177,13 @@ export function StoryViewer({
                   src={currentStory.mediaUrl}
                   className="max-h-full max-w-full object-contain"
                   controls={false}
-                  onEnded={handleVideoEnded}
+                  muted
+                  playsInline
                 />
               ) : (
                 <img
-                  src={currentStory.mediaUrl || "/placeholder.svg"}
-                  alt="Story"
+                  src={currentStory.mediaUrl}
+                  alt="Story content"
                   className="max-h-full max-w-full object-contain"
                 />
               )
@@ -190,28 +194,29 @@ export function StoryViewer({
             )}
           </div>
 
-          {/* Navigation buttons */}
-          <button
-            className="absolute left-0 top-1/2 -translate-y-1/2 h-full w-1/4"
-            onClick={(e) => {
-              e.stopPropagation()
-              goToPrevStory()
-            }}
-          >
-            <ChevronLeft className="h-8 w-8 opacity-0" />
-          </button>
-          <button
-            className="absolute right-0 top-1/2 -translate-y-1/2 h-full w-1/4"
-            onClick={(e) => {
-              e.stopPropagation()
-              goToNextStory()
-            }}
-          >
-            <ChevronRight className="h-8 w-8 opacity-0" />
-          </button>
+          {/* Navigation Controls */}
+          <div className="absolute inset-0 flex justify-between items-center">
+            <button
+              className="h-full w-1/4 flex items-center justify-start pl-4"
+              onClick={(e) => {
+                e.stopPropagation()
+                goToPrevStory()
+              }}
+            >
+              <ChevronLeft className="h-8 w-8 text-white/80 hover:text-white" />
+            </button>
+            <button
+              className="h-full w-1/4 flex items-center justify-end pr-4"
+              onClick={(e) => {
+                e.stopPropagation()
+                goToNextStory()
+              }}
+            >
+              <ChevronRight className="h-8 w-8 text-white/80 hover:text-white" />
+            </button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
   )
 }
-
